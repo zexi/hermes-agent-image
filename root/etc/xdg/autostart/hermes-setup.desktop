@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Hermes Setup
+Comment=Launch `hermes setup` in a terminal on first run (config.yaml missing)
+Exec=/usr/local/bin/hermes-setup-launcher.sh
+OnlyShowIn=XFCE;
+X-GNOME-Autostart-enabled=true
+NoDisplay=false

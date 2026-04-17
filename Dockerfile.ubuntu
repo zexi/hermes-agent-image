@@ -1,0 +1,33 @@
+ARG BASE_IMAGE=registry.cn-beijing.aliyuncs.com/zexi/hermes-base:20260416.0
+
+FROM ${BASE_IMAGE}
+
+# 把 linuxbrew 移动到 /opt 目录下，启动脚本再把这个移动回来，解决 volume 挂载后 linuxbrew 目录被覆盖的问题
+RUN mv /home/linuxbrew /opt
+
+# wmctrl: used by hermes-setup-launcher.sh fallback path to fullscreen the
+# setup terminal when the emulator lacks a native fullscreen flag.
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    wmctrl \
+  && rm -rf /var/lib/apt/lists/*
+
+# Install extra Python packages into the hermes venv (owned by UID 1000)
+USER 1000
+RUN UV_CACHE_DIR=/tmp/uv-cache UV_DEFAULT_INDEX=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple \
+    uv pip install --no-cache-dir --python /opt/hermes/.venv/bin/python qrcode \
+    && rm -rf /tmp/uv-cache
+USER root
+
+# Disable Chromium sandbox (container environment)
+RUN mkdir -p /etc/chromium.d && \
+    echo 'export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox"' > /etc/chromium.d/no-sandbox
+
+# Entrypoint scripts
+COPY scripts/ /app/scripts/
+RUN chmod +x /app/scripts/*.sh
+
+# 安装基于 s6-rc 的 hermes-agent 服务定义 + XDG autostart
+COPY root/ /
+RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-hermes-agent/run \
+  && chmod +x /usr/local/bin/hermes-setup-launcher.sh

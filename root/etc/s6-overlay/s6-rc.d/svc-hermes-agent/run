@@ -1,0 +1,19 @@
+#!/usr/bin/with-contenv bash
+set -e
+
+echo "[svc-hermes-agent] waiting for desktop (/de-pid)..."
+
+# svc-de 在启动 DE 后会写 /de-pid（X / Wayland 均如此）
+for i in $(seq 1 300); do
+  if [ -s /de-pid ]; then
+    break
+  fi
+  sleep 0.5
+done
+
+if [ ! -s /de-pid ]; then
+  echo "[svc-hermes-agent] WARNING: desktop not ready after timeout, continuing anyway"
+fi
+
+echo "[svc-hermes-agent] starting /app/scripts/entrypoint-hermes.sh"
+exec /app/scripts/entrypoint-hermes.sh
