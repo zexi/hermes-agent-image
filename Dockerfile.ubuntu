@@ -30,4 +30,6 @@ RUN chmod +x /app/scripts/*.sh
 # 安装基于 s6-rc 的 hermes-agent 服务定义 + XDG autostart
 COPY root/ /
 RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-hermes-agent/run \
-  && chmod +x /usr/local/bin/hermes-setup-launcher.sh
+  && chmod +x /usr/local/bin/hermes-setup-launcher.sh \
+  && chmod +x /usr/local/bin/hermes-open-terminal.sh \
+  && chmod +x /usr/local/bin/hermes-setup-wrapper

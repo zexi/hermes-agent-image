@@ -1,0 +1,47 @@
+#!/opt/hermes/.venv/bin/python
+"""Wrapper around `hermes setup` that touches the .setup-done marker BEFORE
+the "Launch hermes chat now?" prompt would os.execvp into `hermes chat`.
+
+Without this wrapper, touching the marker after `hermes setup` returns only
+runs after the user exits the launched chat — which delays gateway startup.
+
+Reads the marker path from the HERMES_SETUP_DONE_MARKER env var.
+"""
+import os
+import sys
+
+
+def _touch_marker() -> None:
+    marker = os.environ.get("HERMES_SETUP_DONE_MARKER")
+    if not marker:
+        return
+    try:
+        with open(marker, "a"):
+            pass
+    except OSError as exc:
+        print(
+            f"[hermes-setup-wrapper] warning: could not touch {marker}: {exc}",
+            file=sys.stderr,
+        )
+
+
+from hermes_cli import setup as _setup_mod
+
+_original_offer = _setup_mod._offer_launch_chat
+
+
+def _patched_offer() -> None:
+    _touch_marker()
+    print(
+        "[hermes-setup-wrapper] setup complete — gateway will start in the background"
+    )
+    _original_offer()
+
+
+_setup_mod._offer_launch_chat = _patched_offer
+
+
+from hermes_cli.main import main
+
+sys.argv = ["hermes", "setup", *sys.argv[1:]]
+sys.exit(main())
