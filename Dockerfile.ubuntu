@@ -2,21 +2,55 @@ ARG BASE_IMAGE=registry.cn-beijing.aliyuncs.com/zexi/hermes-base:20260416.0
 
 FROM ${BASE_IMAGE}
 
+# Override base ENV — HERMES_HOME landed on /opt/data (matching the upstream
+# hermes-agent standalone Dockerfile). This is redeclared here so that a
+# `make build` alone picks it up without needing a base rebuild.
+ENV HERMES_HOME=/opt/data
+
 # 把 linuxbrew 移动到 /opt 目录下，启动脚本再把这个移动回来，解决 volume 挂载后 linuxbrew 目录被覆盖的问题
 RUN mv /home/linuxbrew /opt
 
-# wmctrl: used by hermes-setup-launcher.sh fallback path to fullscreen the
-# setup terminal when the emulator lacks a native fullscreen flag.
+# wmctrl: maximize fallback for terminals without a native --maximize flag.
+# pandoc: document conversion (markdown/html/pdf/docx/...), commonly used by
+#   hermes skills for writing reports and processing user-supplied documents.
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     wmctrl \
+    pandoc \
   && rm -rf /var/lib/apt/lists/*
 
-# Install extra Python packages into the hermes venv (owned by UID 1000)
+# Claude Code CLI — installed globally for skills + terminal use.
+# Lands at /usr/lib/node_modules/@anthropic-ai/claude-code with a
+# /usr/bin/claude shim.
+RUN npm install -g --prefer-offline --no-audit @anthropic-ai/claude-code \
+  && npm cache clean --force
+
+# Install extra Python packages into the hermes system venv (owned by UID 1000).
+# Kept in the system venv (not user venv) so they're available out-of-the-box
+# without first-run bootstrap.
+#   qrcode           — QR code image generation
+#   pdfplumber       — text + table extraction from PDFs
+#   pypdf            — modern PyPDF2 fork, read/write/merge PDFs
+#   pymupdf          — fast PDF rendering + text/image extraction (aka fitz)
 USER 1000
 RUN UV_CACHE_DIR=/tmp/uv-cache UV_DEFAULT_INDEX=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple \
-    uv pip install --no-cache-dir --python /opt/hermes/.venv/bin/python qrcode \
+    uv pip install --no-cache-dir --python /opt/hermes/.venv/bin/python \
+        qrcode \
+        pdfplumber \
+        pypdf \
+        pymupdf \
     && rm -rf /tmp/uv-cache
+
+# Register user-venv's site-packages into the system venv's sys.path via a .pth
+# file. Python processes .pth files AFTER base site-packages, so user-installed
+# packages get appended (hermes core deps keep priority on any name clash).
+# The directory need not exist at image-build time — Python silently skips
+# missing paths in .pth files, and entrypoint-hermes.sh creates the user venv
+# on first container start. Python version is queried from the installed venv
+# rather than hardcoded so base-image Python upgrades don't break this step.
+RUN PV=$(/opt/hermes/.venv/bin/python -c "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')") \
+    && SP=$(/opt/hermes/.venv/bin/python -c "import site; print(site.getsitepackages()[0])") \
+    && echo "/opt/data/.venv-user/lib/$PV/site-packages" > "$SP/user-venv.pth"
 USER root
 
 # Disable Chromium sandbox (container environment)
@@ -32,4 +66,5 @@ COPY root/ /
 RUN chmod +x /etc/s6-overlay/s6-rc.d/svc-hermes-agent/run \
   && chmod +x /usr/local/bin/hermes-setup-launcher.sh \
   && chmod +x /usr/local/bin/hermes-open-terminal.sh \
-  && chmod +x /usr/local/bin/hermes-setup-wrapper
+  && chmod +x /usr/local/bin/hermes-setup-wrapper \
+  && chmod +x /usr/local/bin/hermes-xfce-settings.sh

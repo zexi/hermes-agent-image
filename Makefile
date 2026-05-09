@@ -1,8 +1,19 @@
-HERMES_GIT_REF ?= v2026.4.16
-IMAGE_TAG ?= 20260420.2
-BASE_IMAGE_TAG ?= 20260417.0
+HERMES_GIT_REF ?= v2026.4.23
+IMAGE_TAG ?= 20260424.0
+BASE_IMAGE_TAG ?= 20260424.0
+
+# Set SKIP_CHECKOUT=1 to build-base against the current hermes-agent working
+# tree without running `git fetch` + `git checkout $(HERMES_GIT_REF)` first.
+# Useful for iterating on local changes inside hermes-agent/.
+SKIP_CHECKOUT ?=
 
 HERMES_AGENT_DIR := ./hermes-agent
+
+ifeq ($(SKIP_CHECKOUT),)
+BASE_DEPS := checkout
+else
+BASE_DEPS :=
+endif
 
 .PHONY: checkout build build-base
 
@@ -16,7 +27,7 @@ build:
 		-t registry.cn-beijing.aliyuncs.com/zexi/hermes:$(HERMES_GIT_REF)-$(IMAGE_TAG) \
 		-f Dockerfile.ubuntu .
 
-build-base: checkout
+build-base: $(BASE_DEPS)
 	docker buildx build --platform linux/amd64 --push \
 		-t registry.cn-beijing.aliyuncs.com/zexi/hermes-base:$(HERMES_GIT_REF)-$(BASE_IMAGE_TAG) \
 		-f Dockerfile.ubuntu-base $(HERMES_AGENT_DIR)

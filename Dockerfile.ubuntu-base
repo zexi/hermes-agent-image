@@ -78,6 +78,16 @@ RUN npm config set registry http://mirrors.cloud.tencent.com/npm/ \
   && npm install --prefer-offline --no-audit \
   && npm cache clean --force
 
+# Build web dashboard (Vite outputs to hermes_cli/web_dist/).
+# NODE_ENV=production at the top of this Dockerfile makes `npm install` skip
+# devDependencies by default, but `npm run build` needs TypeScript/Vite from
+# devDependencies — so install with --include=dev for this step.
+RUN cd /opt/hermes/web \
+  && npm config set registry http://mirrors.cloud.tencent.com/npm/ \
+  && npm install --include=dev --prefer-offline --no-audit \
+  && npm run build \
+  && npm cache clean --force
+
 # Hand ownership to webtop default user (UID 1000), then install Python deps
 RUN chown -R 1000:1000 /opt/hermes
 USER 1000
@@ -85,10 +95,16 @@ USER 1000
 ENV UV_CACHE_DIR=/tmp/uv-cache
 ENV UV_DEFAULT_INDEX=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 ENV VIRTUAL_ENV=/opt/hermes/.venv
-RUN uv venv "$VIRTUAL_ENV" && \
-    uv pip install --no-cache-dir --python "$VIRTUAL_ENV/bin/python" -e ".[all]" && \
+# Use `uv sync --all-extras --frozen` to install from uv.lock directly.
+# The lock file pins exact versions computed under the "exclude-newer = 7 days"
+# rolling window at lock time, so a fresh `uv pip install` today (2026-04-24)
+# filters out python-olm etc. `--frozen` bypasses that re-resolution entirely
+# and reuses the lockfile's pinned packages + upload dates.
+# `uv sync` auto-creates the venv at WORKDIR/.venv = /opt/hermes/.venv.
+RUN uv sync --all-extras --frozen && \
     rm -rf /tmp/uv-cache
 
 USER root
 
-ENV HERMES_HOME=/config/.hermes
+ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
+ENV HERMES_HOME=/opt/data

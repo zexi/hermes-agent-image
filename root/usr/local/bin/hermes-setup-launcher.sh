@@ -7,7 +7,7 @@
 # maximized terminal tailing the gateway logs.
 set -e
 
-HERMES_HOME="${HERMES_HOME:-/config/.hermes}"
+HERMES_HOME="${HERMES_HOME:-/opt/data}"
 CONFIG="${HERMES_HOME}/config.yaml"
 SETUP_DONE="${HERMES_HOME}/.setup-done"
 

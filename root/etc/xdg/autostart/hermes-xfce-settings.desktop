@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Hermes XFCE Settings
+Comment=Apply XFCE panel/DPI/font tweaks for legible rendering in webtop
+Exec=/usr/local/bin/hermes-xfce-settings.sh
+OnlyShowIn=XFCE;
+X-GNOME-Autostart-enabled=true
+NoDisplay=false

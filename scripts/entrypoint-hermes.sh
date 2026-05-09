@@ -3,7 +3,7 @@
 # Adapted from hermes-agent/docker/entrypoint.sh for the webtop/s6-overlay context.
 set -e
 
-HERMES_HOME="${HERMES_HOME:-/config/.hermes}"
+HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
 echo "[entrypoint] hermes home: $HERMES_HOME"
@@ -19,6 +19,15 @@ source "${INSTALL_DIR}/.venv/bin/activate"
 
 # ── Create essential directory structure ────────────────────────────────────
 mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
+
+# ── Create persistent user venv for user-installed Python packages ─────────
+# Packages live in $HERMES_HOME/.venv-user/lib/python3.13/site-packages and
+# are picked up by /opt/hermes/.venv via user-venv.pth (written at build time).
+# This survives image upgrades since $HERMES_HOME is a volume mount point.
+if [ ! -x "$HERMES_HOME/.venv-user/bin/python" ]; then
+    echo "[entrypoint] creating persistent user venv at $HERMES_HOME/.venv-user..."
+    uv venv "$HERMES_HOME/.venv-user" --python "${INSTALL_DIR}/.venv/bin/python"
+fi
 
 # ── Bootstrap default configs (only if missing) ────────────────────────────
 if [ ! -f "$HERMES_HOME/.env" ]; then
@@ -37,7 +46,14 @@ if [ -f "$HERMES_HOME/config.yaml" ] && [ ! -f "$HERMES_HOME/.setup-done" ]; the
     touch "$HERMES_HOME/.setup-done"
 fi
 
-if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
+# SOUL.md:
+#   - Always bootstrap on first run.
+#   - On subsequent runs, force-refresh from image default by default so
+#     image-baked updates propagate. Set HERMES_SYNC_SOUL_MD=0 (or any value
+#     other than 1/true) to preserve user edits across gateway restarts.
+if [ ! -f "$HERMES_HOME/SOUL.md" ] \
+   || [ "${HERMES_SYNC_SOUL_MD:-1}" = "1" ] \
+   || [ "${HERMES_SYNC_SOUL_MD:-1}" = "true" ]; then
     cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
 fi
 
@@ -49,6 +65,7 @@ fi
 # ── Fix ownership ───────────────────────────────────────────────────────────
 echo "[entrypoint] setting ownership of $HERMES_HOME to 1000:1000..."
 chown -R 1000:1000 "$HERMES_HOME"
+chown -R 1000:1000 "/config"
 
 # ── Wait for user to complete `hermes setup` (touches .setup-done marker) ──
 if [ ! -f "$HERMES_HOME/.setup-done" ]; then
