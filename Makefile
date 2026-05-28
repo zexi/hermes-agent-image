@@ -1,6 +1,6 @@
-HERMES_GIT_REF ?= v2026.4.23
-IMAGE_TAG ?= 20260424.0
-BASE_IMAGE_TAG ?= 20260424.0
+HERMES_GIT_REF ?= v2026.5.16
+IMAGE_TAG ?= 20260527.1
+BASE_IMAGE_TAG ?= 20260525.0
 
 # Set SKIP_CHECKOUT=1 to build-base against the current hermes-agent working
 # tree without running `git fetch` + `git checkout $(HERMES_GIT_REF)` first.

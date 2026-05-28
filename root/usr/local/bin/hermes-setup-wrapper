@@ -1,47 +1,70 @@
 #!/opt/hermes/.venv/bin/python
-"""Wrapper around `hermes setup` that touches the .setup-done marker BEFORE
-the "Launch hermes chat now?" prompt would os.execvp into `hermes chat`.
-
-Without this wrapper, touching the marker after `hermes setup` returns only
-runs after the user exits the launched chat — which delays gateway startup.
+"""Thin wrapper around `hermes setup` that touches the .setup-done marker
+on successful return so the waiting s6 gateway service starts automatically.
 
 Reads the marker path from the HERMES_SETUP_DONE_MARKER env var.
 """
 import os
 import sys
+import traceback
 
 
-def _touch_marker() -> None:
+def _touch_marker() -> bool:
     marker = os.environ.get("HERMES_SETUP_DONE_MARKER")
     if not marker:
-        return
+        return False
     try:
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
         with open(marker, "a"):
             pass
-    except OSError as exc:
-        print(
-            f"[hermes-setup-wrapper] warning: could not touch {marker}: {exc}",
-            file=sys.stderr,
-        )
-
-
-from hermes_cli import setup as _setup_mod
-
-_original_offer = _setup_mod._offer_launch_chat
-
-
-def _patched_offer() -> None:
-    _touch_marker()
-    print(
-        "[hermes-setup-wrapper] setup complete — gateway will start in the background"
-    )
-    _original_offer()
-
-
-_setup_mod._offer_launch_chat = _patched_offer
+        return True
+    except OSError:
+        # Fallback: if $HERMES_HOME is unwritable (volume mount, rootless
+        # container), write the marker to /tmp and symlink so the entrypoint
+        # still finds it.
+        alt = os.path.join("/tmp", os.path.basename(marker))
+        try:
+            with open(alt, "a"):
+                pass
+            if os.path.exists(marker):
+                os.remove(marker)
+            os.symlink(alt, marker)
+            print(
+                f"[hermes-setup-wrapper] marker symlinked to {alt}",
+                file=sys.stderr,
+            )
+            return True
+        except OSError as exc2:
+            print(
+                f"[hermes-setup-wrapper] warning: could not touch marker: {exc2}",
+                file=sys.stderr,
+            )
+            return False
 
 
 from hermes_cli.main import main
 
+# main() reads sys.argv directly
 sys.argv = ["hermes", "setup", *sys.argv[1:]]
-sys.exit(main())
+
+rc = 0
+try:
+    rc = main()
+except SystemExit as e:
+    rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+except Exception:
+    traceback.print_exc()
+    rc = 1
+finally:
+    if rc == 0 or rc is None:
+        _touch_marker()
+        print(
+            "[hermes-setup-wrapper] setup complete — gateway will start in the background"
+        )
+    else:
+        print(
+            f"[hermes-setup-wrapper] setup exited with code {rc} — gateway will not start",
+            file=sys.stderr,
+        )
+
+raise SystemExit(rc if isinstance(rc, int) else 0)

@@ -24,6 +24,15 @@ RUN apt-get update \
     iputils-ping \
     tmux \
     rsync \
+    openssh-client \
+    # Playwright chromium system deps (Ubuntu 26.04 t64 variants — y2038 transition)
+    libnss3 libnspr4 \
+    libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 \
+    libcups2t64 \
+    libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+    libgbm1 libdrm2 \
+    libpango-1.0-0 libcairo2 \
+    libasound2t64 libwayland-client0 \
   && rm -rf /var/lib/apt/lists/*
 
 # Install Go (used by many skills)
@@ -66,45 +75,112 @@ ENV HOMEBREW_PREFIX="/home/linuxbrew/.linuxbrew" \
     HOMEBREW_REPOSITORY="/home/linuxbrew/.linuxbrew/Homebrew" \
     PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${PATH}"
 
-# Copy hermes-agent source (build context is ../hermes-agent)
-COPY . /opt/hermes
 WORKDIR /opt/hermes
 
-# Install Node dependencies and Playwright as root (--with-deps needs apt)
+# ---------- Layer-cached npm dependency install ----------
+# Copy only package manifests first so npm install + Playwright are cached
+# unless the lockfiles themselves change.
+#
+# ui-tui/packages/hermes-ink/ is copied IN FULL (not just its manifests)
+# because it is referenced as a `file:` workspace dependency from
+# ui-tui/package.json. Copying the tree up front lets npm resolve the
+# workspace to real content instead of stopping at a bare package.json.
+COPY package.json package-lock.json ./
+COPY web/package.json web/package-lock.json web/
+COPY scripts/whatsapp-bridge/package.json scripts/whatsapp-bridge/package-lock.json scripts/whatsapp-bridge/
+COPY ui-tui/package.json ui-tui/package-lock.json ui-tui/
+COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
+
+# `npm_config_install_links=false` forces npm to install `file:` deps as
+# symlinks (the npm 10+ default) even on Debian's older bundled npm 9.x,
+# which defaults to `install-links=true` and installs file deps as *copies*.
+# The host-side package-lock.json is generated with a newer npm that uses
+# symlinks, so an install-as-copy produces a hidden
+# node_modules/.package-lock.json that permanently disagrees with the root
+# lock on the @hermes/ink entry. That disagreement trips the TUI launcher's
+# `_tui_need_npm_install()` check on every startup.
+ENV npm_config_install_links=false
+
+# NODE_ENV=production at the top makes `npm install` skip devDependencies by
+# default; web/ needs them (typescript, vite) for `npm run build`, so pass
+# --include=dev for that one.
+# Spoof Ubuntu 24.04 platform so Playwright downloads its bundled chromium
+# (24.04 binaries run fine on 26.04 with the t64 libs installed above).
+# See: https://github.com/microsoft/playwright/issues/40117
+ENV PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=ubuntu24.04-x64
+
 RUN npm config set registry http://mirrors.cloud.tencent.com/npm/ \
   && npm install --prefer-offline --no-audit \
-  && npx playwright install --with-deps chromium --only-shell \
-  && cd /opt/hermes/scripts/whatsapp-bridge \
-  && npm install --prefer-offline --no-audit \
+  && npx playwright install chromium --only-shell \
+  && (cd web && npm install --include=dev --prefer-offline --no-audit) \
+  && (cd ui-tui && npm install --include=dev --prefer-offline --no-audit) \
   && npm cache clean --force
 
-# Build web dashboard (Vite outputs to hermes_cli/web_dist/).
-# NODE_ENV=production at the top of this Dockerfile makes `npm install` skip
-# devDependencies by default, but `npm run build` needs TypeScript/Vite from
-# devDependencies — so install with --include=dev for this step.
-RUN cd /opt/hermes/web \
+# whatsapp-bridge has git:// deps (@whiskeysockets/baileys → libsignal-node
+# from GitHub) that need direct GitHub access. On flaky network / restricted
+# build environments this can time out. Run it separately and make it non-
+# fatal — WhatsApp isn't core hermes functionality.
+RUN cd /opt/hermes/scripts/whatsapp-bridge \
   && npm config set registry http://mirrors.cloud.tencent.com/npm/ \
-  && npm install --include=dev --prefer-offline --no-audit \
-  && npm run build \
-  && npm cache clean --force
+  && npm install --prefer-offline --no-audit \
+  && npm cache clean --force || \
+  echo "[warn] whatsapp-bridge npm install failed — WhatsApp support disabled"
 
-# Hand ownership to webtop default user (UID 1000), then install Python deps
-RUN chown -R 1000:1000 /opt/hermes
-USER 1000
-
+# ---------- Layer-cached Python dependency install ----------
+# Copy only pyproject.toml + uv.lock so the Python dep resolve + wheel
+# download + native-extension compile layer is cached unless those inputs
+# change. Before this split the Python install sat after `COPY . .`, so
+# every source-only commit re-did ~4-5 min of dep work on cold builds.
+#
+# README.md is referenced by pyproject.toml's `readme =` field, but it's
+# excluded from the build context by .dockerignore's `*.md`. uv's build
+# frontend stats the readme path during dep resolution, so we `touch` an
+# empty placeholder — the real README is restored by `COPY . .` below.
+#
+# `uv sync --frozen --no-install-project --extra all` installs only the
+# deps reachable through the composite `[all]` extra (handpicked set
+# intended for the production image). We do NOT use `--all-extras`:
+# that would pull in `[rl]` (atroposlib + tinker + torch + wandb from
+# git), `[yc-bench]` (another git dep), and `[termux-all]` (Android
+# redundancy), none of which belong in the published container.
+#
+# The editable link is created after the source copy below.
 ENV UV_CACHE_DIR=/tmp/uv-cache
 ENV UV_DEFAULT_INDEX=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
-ENV VIRTUAL_ENV=/opt/hermes/.venv
-# Use `uv sync --all-extras --frozen` to install from uv.lock directly.
-# The lock file pins exact versions computed under the "exclude-newer = 7 days"
-# rolling window at lock time, so a fresh `uv pip install` today (2026-04-24)
-# filters out python-olm etc. `--frozen` bypasses that re-resolution entirely
-# and reuses the lockfile's pinned packages + upload dates.
-# `uv sync` auto-creates the venv at WORKDIR/.venv = /opt/hermes/.venv.
-RUN uv sync --all-extras --frozen && \
+COPY pyproject.toml uv.lock ./
+RUN touch ./README.md && \
+    uv sync --frozen --no-install-project --extra all && \
     rm -rf /tmp/uv-cache
 
-USER root
+# ---------- Source code (build context is ../hermes-agent) -------------------
+# .dockerignore excludes node_modules, so the installs above survive.
+COPY . /opt/hermes
+
+# Build browser dashboard and terminal UI assets.
+RUN cd /opt/hermes/web && npm run build && \
+    cd ../ui-tui && npm run build
+
+# ---------- Permissions -----------------------------------------------------
+# Make install dir world-readable so any UID can read it at runtime.
+# The venv MUST be writable by the runtime user (UID 1000) so lazy_deps.py
+# can install platform packages (discord.py, telegram, slack, etc.) at
+# first gateway boot. Without this, `uv pip install` fails with EACCES and
+# all messaging adapters silently fail to load.
+# node_modules trees need to be writable too so the runtime
+# `npm install` triggered by _tui_need_npm_install() succeeds.
+# /opt/hermes/web is build-time only (HERMES_WEB_DIST points at
+# hermes_cli/web_dist) and is intentionally omitted from the chown.
+ENV VIRTUAL_ENV=/opt/hermes/.venv
+RUN chmod -R a+rX /opt/hermes && \
+    chown -R 1000:1000 /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules
+
+# ---------- Link hermes-agent itself (editable) -----------------------------
+# Deps are already installed in the cached layer above; `--no-deps` makes
+# this a fast (~1s) egg-link creation with no resolution or downloads.
+RUN uv pip install --no-cache-dir --no-deps -e "."
 
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
+# Match upstream: $HERMES_HOME/.local/bin is where pipx-style user-installed
+# CLI tools land at runtime; expose it on PATH globally.
+ENV PATH="/opt/data/.local/bin:${PATH}"

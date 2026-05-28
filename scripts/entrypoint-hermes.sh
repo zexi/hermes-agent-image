@@ -21,11 +21,13 @@ source "${INSTALL_DIR}/.venv/bin/activate"
 mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
 
 # ── Create persistent user venv for user-installed Python packages ─────────
-# Packages live in $HERMES_HOME/.venv-user/lib/python3.13/site-packages and
-# are picked up by /opt/hermes/.venv via user-venv.pth (written at build time).
+# Packages live in $HERMES_HOME/.venv-user and are picked up by
+# /opt/hermes/.venv via user-venv.pth (written at build time).
 # This survives image upgrades since $HERMES_HOME is a volume mount point.
 if [ ! -x "$HERMES_HOME/.venv-user/bin/python" ]; then
     echo "[entrypoint] creating persistent user venv at $HERMES_HOME/.venv-user..."
+    # --clear handles stale/incomplete venvs left by interrupted previous runs
+    rm -rf "$HERMES_HOME/.venv-user"
     uv venv "$HERMES_HOME/.venv-user" --python "${INSTALL_DIR}/.venv/bin/python"
 fi
 
@@ -62,10 +64,14 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
-# ── Fix ownership ───────────────────────────────────────────────────────────
+# ── Fix ownership / permissions ─────────────────────────────────────────────
+# The setup wrapper (runs as UID 1000 from XFCE) needs write access to
+# $HERMES_HOME to touch .setup-done. In rootless containers chown may be a
+# no-op, so also chmod to ensure the directory is traversable + writable.
 echo "[entrypoint] setting ownership of $HERMES_HOME to 1000:1000..."
-chown -R 1000:1000 "$HERMES_HOME"
-chown -R 1000:1000 "/config"
+chown -R 1000:1000 "$HERMES_HOME" 2>/dev/null || true
+chmod -R a+rwX "$HERMES_HOME" 2>/dev/null || true
+chown -R 1000:1000 "/config" 2>/dev/null || true
 
 # ── Wait for user to complete `hermes setup` (touches .setup-done marker) ──
 if [ ! -f "$HERMES_HOME/.setup-done" ]; then
